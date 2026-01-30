@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infinite Maze Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #1a1a1a;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+        }
+
+        #info {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        #position {
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+
+        #instructions {
+            font-size: 14px;
+            color: #888;
+        }
+
+        #gameCanvas {
+            border: 3px solid #444;
+            background-color: #000;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        .controls {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <span id="gameId" style="font-size: 12px; color: #666; margin-bottom: 10px;"></span> |
+        <span id="otherPlayers" style="font-size: 12px; color: #666; margin-bottom: 10px;"></span> |
+        <span id="playerId" style="font-size: 12px; color: #666; margin-bottom: 10px;"></span>
+        <div id="position">Position: (0, 0)</div>
+        <div id="instructions">Use Arrow Keys, WASD, Mouse, or Touch to move</div>
+    </div>
+    <canvas id="gameCanvas" width="640" height="640"></canvas>
+    <div class="controls">
+        Press R to reset | Move mouse/touch near player to navigate
+    </div>
+
+    <script>
+        //const serverUrl = 'https://www.forestier.xyz/maze/';
+        if (!window.location.hostname) {
+            var serverUrl = 'http://localhost:8000/';
+        } else {
+            var serverUrl = './'; //window.location.protocol + '//' + window.location.hostname + '/maze/';
+        }
+        const serverRefreshInterval = 10000; // 10 seconds
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const positionDisplay = document.getElementById('position');
+        const playerIdDisplay = document.getElementById('playerId');
+        const gameIdDisplay = document.getElementById('gameId');
+        const otherPlayersDisplay = document.getElementById('otherPlayers');
+        
+        // Variables to store player and game IDs from server
+        let currentPlayerId = '';
+        let currentGameId = '';
+        let currentGameSeed = 0;
+
+        // Initialize game by fetching player and game IDs from server
+        function initializeGame() {
+            fetch(`${serverUrl}init.php`)
+                .then(response => response.json())
+                .then(data => {
+                    currentPlayerId = data.playerid;
+                    currentGameId = data.gameid;
+                    currentGameSeed = data.seed;
+                    playerIdDisplay.textContent = `Player ID: ${currentPlayerId}`;
+                    gameIdDisplay.textContent = `Game ID: ${currentGameId}`;
+                    // Start the game after initialization
+                    startGame();
+                })
+                .catch(error => {
+                    console.error('Failed to initialize game:', error);
+                    // Fallback: generate IDs locally if init.php fails
+                    currentPlayerId = generatePlayerId();
+                    const now = new Date();
+                    //currentGameId = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
+                    currentGameSeed = 123456; // Default seed
+                    currentGameId = `local-${currentGameId}`;
+                    playerIdDisplay.textContent = `Player ID: ${currentPlayerId}`;
+                    gameIdDisplay.textContent = `Game ID: ${currentGameId}`;
+                    startGame();
+                });
+        }
+
+        // Generate unique player identifier (fallback)
+        function generatePlayerId(length = 10) {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let playerId = '';
+            for (let i = 0; i < length; i++) {
+                playerId += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return playerId;
+        }
+
+        // Game settings
+        let GRID_SIZE = 7; // visible cells (can change with powerups)
+        let CELL_SIZE = canvas.width / GRID_SIZE; // Size of each cell in pixels
+
+        // Player position (in maze coordinates)
+        let playerX = 0;
+        let playerY = 0;
+        let hasLeftOrigin = false;
+        // Get cool icon from https://www.compart.com/en/unicode/search?q=face#characters
+        const playerIcons = ['😀', '😃', '😄', '😊', '😑', '😐', '😏', '😑', '😒', '😐', '😕'];
+        let playerIconIndex = 0;
+
+        // Powerup system
+        const collectedPowerups = new Set(); // Track collected powerups by position key
+        let isZoomedOut = false; // Track zoom state
+        let ghostMovesRemaining = 0; // Tracks remaining moves in ghost mode
+        let otherPlayers = {}; // Track other players' positions
+
+        // Powerup types
+        const POWERUP_TYPES = {
+            ZOOM:  { icon: '🔍', probability: 0.005 },
+            GHOST: { icon: '👻', probability: 0.001 }
+        };
+
+        // Complex maze generation using Perlin-like noise and cellular automata
+        class InfiniteMaze {
+            constructor(gameSeed = 0) {
+                // Store the game seed for deterministic maze generation
+                this.gameSeed = gameSeed / 100000000;
+            }
+
+            // High-quality hash function for procedural generation
+            hash(x, y, seed = 0) {
+                let h = (this.gameSeed + seed) * 374761393 + x * 668265263 + y * 2147483647;
+                h = (h ^ (h >>> 16)) * 0x85ebca6b;
+                h = (h ^ (h >>> 13)) * 0xc2b2ae35;
+                h = h ^ (h >>> 16);
+                return h >>> 0;
+            }
+
+            // Get pseudo-random value between 0 and 1
+            random(x, y, seed = 0) {
+                return (this.hash(x, y, seed) % 10000) / 10000;
+            }
+
+            // Perlin-like noise for smoother patterns
+            noise(x, y, frequency = 1) {
+                const fx = x * frequency;
+                const fy = y * frequency;
+                
+                const x0 = Math.floor(fx);
+                const x1 = x0 + 1;
+                const y0 = Math.floor(fy);
+                const y1 = y0 + 1;
+                
+                const sx = fx - x0;
+                const sy = fy - y0;
+                const f = (frequency * 1000);
+
+                const n00 = this.random(x0, y0, f);
+                const n10 = this.random(x1, y0, f);
+                const n01 = this.random(x0, y1, f);
+                const n11 = this.random(x1, y1, f);
+                
+                const nx0 = n00 * (1 - sx) + n10 * sx;
+                const nx1 = n01 * (1 - sx) + n11 * sx;
+                
+                return nx0 * (1 - sy) + nx1 * sy;
+            }
+
+            // Check if there's a wall between two cells using complex algorithm
+            hasWall(x1, y1, x2, y2) {
+                const dx = x2 - x1;
+                const dy = y2 - y1;
+
+                if (dx === 0 && dy === 0) return true;
+                if (Math.abs(dx) + Math.abs(dy) !== 1) return true;
+
+                // Determine which wall to check
+                let wallX, wallY, isVertical;
+                
+                if (dx === 1) { // Right wall
+                    wallX = x2;
+                    wallY = y2;
+                    isVertical = true;
+                } else if (dx === -1) { // Left wall
+                    wallX = x1;
+                    wallY = y1;
+                    isVertical = true;
+                } else if (dy === 1) { // Bottom wall
+                    wallX = x2;
+                    wallY = y2;
+                    isVertical = false;
+                } else { // Top wall
+                    wallX = x1;
+                    wallY = y1;
+                    isVertical = false;
+                }
+
+                // Combine multiple noise layers for complexity
+                const noise1 = this.noise(wallX, wallY, 0.1); // Large features
+                const noise2 = this.noise(wallX, wallY, 0.3); // Medium features
+                const noise3 = this.noise(wallX, wallY, 0.7); // Small features
+                const noise4 = this.random(wallX, wallY, isVertical ? 7 : 11);
+                
+                // Combine noises with different weights
+                const combined = noise1 * 0.3 + noise2 * 0.3 + noise3 * 0.2 + noise4 * 0.2;
+                
+                // Add directional bias for more interesting corridors
+                const directionSeed = isVertical ? 13 : 17;
+                const directionNoise = this.noise(wallX, wallY, 0.15);
+                const direction = this.random(wallX, wallY, directionSeed);
+                
+                // Create winding corridors
+                let threshold = 0.55; // Base wall probability
+                
+                // Modify threshold based on position patterns
+                if (directionNoise > 0.6) {
+                    threshold += 0.1; // More walls in some areas
+                } else if (directionNoise < 0.4) {
+                    threshold -= 0.1; // More open in other areas
+                }
+                
+                // Add complexity with cellular automata-like rules
+                const neighborInfluence = (
+                    this.random(wallX + 1, wallY, 23) +
+                    this.random(wallX - 1, wallY, 23) +
+                    this.random(wallX, wallY + 1, 23) +
+                    this.random(wallX, wallY - 1, 23)
+                ) / 4;
+                
+                const finalValue = combined * 0.7 + neighborInfluence * 0.3;
+                
+                return finalValue > threshold;
+            }
+
+            // Check if player can move
+            canMove(fromX, fromY, toX, toY) {
+                // If in ghost mode, can always move (no wall blocking)
+                if (ghostMovesRemaining > 0) return true;
+                return !this.hasWall(fromX, fromY, toX, toY);
+            }
+            
+            // return number of wall enclosing the player
+            getWallCount(x, y) {
+                let count = 0;
+                if (this.hasWall(x, y, x, y - 1)) count++; // Top
+                if (this.hasWall(x, y, x, y + 1)) count++; // Bottom
+                if (this.hasWall(x, y, x - 1, y)) count++; // Left
+                if (this.hasWall(x, y, x + 1, y)) count++; // Right
+                return count;
+            }
+
+            // Check if a cell has a powerup (predictable)
+            hasPowerup(x, y) {
+                // Use hash to determine if this cell has a powerup
+                const powerupSeed = 99999;
+                const value = this.random(x, y, powerupSeed);
+                // Total probability is ZOOM + GHOST probability
+                const totalProbability = POWERUP_TYPES.ZOOM.probability + POWERUP_TYPES.GHOST.probability;
+                return value < totalProbability;
+            }
+
+            // Get powerup type for a cell
+            getPowerupType(x, y) {
+                if (!this.hasPowerup(x, y)) return null;
+                // Determine which powerup type based on position hash
+                const typeValue = this.random(x, y, currentGameSeed);
+                const totalProbability = POWERUP_TYPES.ZOOM.probability + POWERUP_TYPES.GHOST.probability;
+                const zoomRatio = POWERUP_TYPES.ZOOM.probability / totalProbability;
+                if (typeValue < zoomRatio) {
+                    return 'ZOOM';
+                } else {
+                    return 'GHOST';
+                }
+            }
+        }
+
+        // Maze will be initialized when the game starts with the seed from server
+        let maze = null;
+
+        // Draw the visible portion of the maze
+        function drawMaze() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Calculate the top-left corner of the visible area
+            const startX = playerX - Math.floor(GRID_SIZE / 2);
+            const startY = playerY - Math.floor(GRID_SIZE / 2);
+
+            // Set transparency based on ghost mode
+            const wallOpacity = ghostMovesRemaining > 0 ? 0.5 : 1.0;
+            const powerupOpacity = ghostMovesRemaining > 0 ? 0.5 : 1.0;
+
+            // Draw each cell
+            for (let gridY = 0; gridY < GRID_SIZE; gridY++) {
+                for (let gridX = 0; gridX < GRID_SIZE; gridX++) {
+                    const mazeX = startX + gridX;
+                    const mazeY = startY + gridY;
+                    
+                    const screenX = gridX * CELL_SIZE;
+                    const screenY = gridY * CELL_SIZE;
+
+                    // Draw cell floor
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(screenX + 1, screenY + 1, CELL_SIZE - 2, CELL_SIZE - 2);
+
+                    // Draw walls with transparency based on ghost mode
+                    ctx.globalAlpha = wallOpacity;
+                    ctx.strokeStyle = '#0af';
+                    ctx.lineWidth = 2;
+
+                    // Check and draw top wall
+                    if (maze.hasWall(mazeX, mazeY, mazeX, mazeY - 1)) {
+                        ctx.beginPath();
+                        ctx.moveTo(screenX, screenY);
+                        ctx.lineTo(screenX + CELL_SIZE, screenY);
+                        ctx.stroke();
+                    }
+
+                    // Check and draw left wall
+                    if (maze.hasWall(mazeX, mazeY, mazeX - 1, mazeY)) {
+                        ctx.beginPath();
+                        ctx.moveTo(screenX, screenY);
+                        ctx.lineTo(screenX, screenY + CELL_SIZE);
+                        ctx.stroke();
+                    }
+
+                    // Check and draw right wall (only for rightmost cells)
+                    if (gridX === GRID_SIZE - 1 && maze.hasWall(mazeX, mazeY, mazeX + 1, mazeY)) {
+                        ctx.beginPath();
+                        ctx.moveTo(screenX + CELL_SIZE, screenY);
+                        ctx.lineTo(screenX + CELL_SIZE, screenY + CELL_SIZE);
+                        ctx.stroke();
+                    }
+
+                    // Check and draw bottom wall (only for bottom cells)
+                    if (gridY === GRID_SIZE - 1 && maze.hasWall(mazeX, mazeY, mazeX, mazeY + 1)) {
+                        ctx.beginPath();
+                        ctx.moveTo(screenX, screenY + CELL_SIZE);
+                        ctx.lineTo(screenX + CELL_SIZE, screenY + CELL_SIZE);
+                        ctx.stroke();
+                    }
+
+                    // Reset opacity for powerups
+                    ctx.globalAlpha = powerupOpacity;
+
+                    // Draw powerup if present and not collected
+                    const powerupKey = `${mazeX},${mazeY}`;
+                    const powerupType = maze.getPowerupType(mazeX, mazeY);
+                    if (powerupType && !collectedPowerups.has(powerupKey)) {
+                        ctx.font = `${CELL_SIZE * 0.6}px Arial`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(POWERUP_TYPES[powerupType].icon, screenX + CELL_SIZE / 2, screenY + CELL_SIZE / 2);
+                    }
+
+                    // Reset opacity to normal for player rendering
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+
+
+            // Draw other players
+            for (const playerId in otherPlayers) {
+                if (playerId === currentPlayerId) continue; // Skip current player
+                const otherPlayer = otherPlayers[playerId];
+                const screenX = (otherPlayer.x - startX) * CELL_SIZE;
+                const screenY = (otherPlayer.y - startY) * CELL_SIZE;
+                
+                // Check if other player is visible on screen
+                if (screenX >= 0 && screenX < canvas.width && screenY >= 0 && screenY < canvas.height) {
+                    ctx.font = `${CELL_SIZE * 0.8}px Arial`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('😈', screenX + CELL_SIZE / 2, screenY + CELL_SIZE / 2);
+                }
+            }
+            
+            // Draw player (centered)
+            const centerX = Math.floor(GRID_SIZE / 2) * CELL_SIZE;
+            const centerY = Math.floor(GRID_SIZE / 2) * CELL_SIZE;
+            
+            ctx.font = `${CELL_SIZE * 0.8}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(playerIcons[playerIconIndex], centerX + CELL_SIZE / 2, centerY + CELL_SIZE / 2);
+
+            // Draw bomb at origin (0,0) if player has left
+            if (hasLeftOrigin) {
+                const originScreenX = (0 - startX) * CELL_SIZE;
+                const originScreenY = (0 - startY) * CELL_SIZE;
+                
+                // Check if origin is visible on screen
+                if (originScreenX >= 0 && originScreenX < canvas.width && 
+                    originScreenY >= 0 && originScreenY < canvas.height) {
+                    ctx.font = `${CELL_SIZE * 0.8}px Arial`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('💣', originScreenX + CELL_SIZE / 2, originScreenY + CELL_SIZE / 2);
+                }
+            }
+        }
+
+        function DIE(reason)
+        {
+            alert(reason);
+            // Reset player position
+            playerX = 0;
+            playerY = 0;
+            hasLeftOrigin = false;
+            ghostMovesRemaining = 0;
+            isZoomedOut = false;
+            collectedPowerups.clear();
+            updateDisplay();
+        }
+        // Handle keyboard input
+        function handleKeyPress(event) {
+            let newX = playerX;
+            let newY = playerY;
+
+            switch(event.key.toLowerCase()) {
+                case 'arrowup':
+                case 'w':
+                case 'z':
+                    newY = playerY - 1;
+                    break;
+                case 'arrowdown':
+                case 's':
+                    newY = playerY + 1;
+                    break;
+                case 'arrowleft':
+                case 'a':
+                case 'q':
+                    newX = playerX - 1;
+                    break;
+                case 'arrowright':
+                case 'd':
+                    newX = playerX + 1;
+                    break;
+                case 'r':
+                    playerX = 0;
+                    playerY = 0;
+                    hasLeftOrigin = false;
+                    updateDisplay();
+                    return;
+                default:
+                    return;
+            }
+
+            // Check if movement is valid
+            if (ghostMovesRemaining === 0 && maze.getWallCount(playerX, playerY) === 4 ) {
+                // Player is completely enclosed by walls and not in ghost mode
+                DIE("Ha ha, you trapped yourself !");
+            }
+            if (maze.canMove(playerX, playerY, newX, newY)) {
+                playerX = newX;
+                playerY = newY;
+                if (playerX !== 0 || playerY !== 0) {
+                    hasLeftOrigin = true;
+                }
+                playerIconIndex = (playerIconIndex + 1) % playerIcons.length;
+                
+                // Decrement ghost mode counter
+                if (ghostMovesRemaining > 0) {
+                    ghostMovesRemaining--;
+                }
+                
+                // Check for powerup collection
+                checkPowerupCollection();
+                
+                updateDisplay();
+            }
+
+            event.preventDefault();
+        }
+
+        // Check and collect powerups
+        function checkPowerupCollection() {
+            const powerupKey = `${playerX},${playerY}`;
+            const powerupType = maze.getPowerupType(playerX, playerY);
+            
+            if (powerupType && !collectedPowerups.has(powerupKey)) {
+                collectedPowerups.add(powerupKey);
+                applyPowerup(powerupType);
+            }
+        }
+
+        // Apply powerup effect
+        function applyPowerup(type) {
+            if (type === 'ZOOM') {
+                // Toggle between 7 and 31 cells
+                if (isZoomedOut) {
+                    GRID_SIZE = 7;
+                    isZoomedOut = false;
+                } else {
+                    GRID_SIZE = 15;
+                    isZoomedOut = true;
+                }
+                CELL_SIZE = canvas.width / GRID_SIZE;
+            } else if (type === 'GHOST') {
+                // Enable ghost mode for 20 moves
+                ghostMovesRemaining = 20;
+            }
+        }
+
+        // Update display
+        function updateDisplay() {
+            drawMaze();
+            const distance = Math.sqrt(playerX * playerX + playerY * playerY).toFixed(1);
+            let displayText = `Position: (${playerX}, ${playerY}) - Distance: ${distance}`;
+            if (ghostMovesRemaining > 0) {
+                displayText += ` - Ghost: ${ghostMovesRemaining}`;
+            }
+            positionDisplay.textContent = displayText;
+        }
+
+        // Handle touch controls
+        function handleTouch(event) {
+            event.preventDefault();
+            
+            if (event.touches.length === 0) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const touchX = event.touches[0].clientX - rect.left;
+            const touchY = event.touches[0].clientY - rect.top;
+            
+            // Calculate which cell was touched
+            const cellX = Math.floor(touchX / CELL_SIZE);
+            const cellY = Math.floor(touchY / CELL_SIZE);
+            
+            // Player is at center
+            const playerCellX = Math.floor(GRID_SIZE / 2);
+            const playerCellY = Math.floor(GRID_SIZE / 2);
+            
+            const cellDx = cellX - playerCellX;
+            const cellDy = cellY - playerCellY;
+            
+            // Determine primary direction
+            let newX = playerX;
+            let newY = playerY;
+            
+            if (Math.abs(cellDx) > Math.abs(cellDy)) {
+                newX = playerX + (cellDx > 0 ? 1 : -1);
+            } else if (cellDy !== 0) {
+                newY = playerY + (cellDy > 0 ? 1 : -1);
+            }
+            
+            // Try to move
+            if (maze.canMove(playerX, playerY, newX, newY)) {
+                playerX = newX;
+                playerY = newY;
+                if (playerX !== 0 || playerY !== 0) {
+                    hasLeftOrigin = true;
+                }
+                playerIconIndex = (playerIconIndex + 1) % playerIcons.length;
+                
+                // Decrement ghost mode counter
+                if (ghostMovesRemaining > 0) {
+                    ghostMovesRemaining--;
+                }
+                
+                // Check for powerup collection
+                checkPowerupCollection();
+                
+                updateDisplay();
+            }
+        }
+
+        // Mouse direction tracking
+        let mouseDirection = { dx: 0, dy: 0 }; // Current mouse direction
+        let isMouseOverCanvas = false;
+        
+        function handleMouseMove(event) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+            
+            // Check if mouse is outside the canvas bounds
+            if (mouseX < 0 || mouseX >= canvas.width || mouseY < 0 || mouseY >= canvas.height) {
+                isMouseOverCanvas = false;
+                mouseDirection = { dx: 0, dy: 0 };
+                return;
+            }
+            
+            isMouseOverCanvas = true;
+            
+            // Calculate which cell the mouse is over
+            const cellX = Math.floor(mouseX / CELL_SIZE);
+            const cellY = Math.floor(mouseY / CELL_SIZE);
+            
+            // Player is always at center
+            const playerCellX = Math.floor(GRID_SIZE / 2);
+            const playerCellY = Math.floor(GRID_SIZE / 2);
+            
+            const cellDx = cellX - playerCellX;
+            const cellDy = cellY - playerCellY;
+            
+            // If mouse is in player's cell, no direction
+            if (cellDx === 0 && cellDy === 0) {
+                mouseDirection = { dx: 0, dy: 0 };
+                return;
+            }
+            
+            // Set direction based on mouse position
+            mouseDirection = { dx: 0, dy: 0 };
+            
+            if (Math.abs(cellDx) > Math.abs(cellDy)) {
+                // Horizontal direction is dominant
+                mouseDirection.dx = cellDx > 0 ? 1 : -1;
+            } else {
+                // Vertical direction is dominant
+                mouseDirection.dy = cellDy > 0 ? 1 : -1;
+            }
+        }
+        
+        function handleMouseLeave() {
+            isMouseOverCanvas = false;
+            mouseDirection = { dx: 0, dy: 0 };
+        }
+
+        // Game loop for continuous mouse movement
+        let lastMoveTime = 0;
+        const MOVE_DELAY = 200; // Milliseconds between moves
+        
+        function gameLoop() {
+            const now = Date.now();
+            
+            // Check if we should move based on mouse direction
+            if (isMouseOverCanvas && (mouseDirection.dx !== 0 || mouseDirection.dy !== 0)) {
+                if (now - lastMoveTime >= MOVE_DELAY) {
+                    const newX = playerX + mouseDirection.dx;
+                    const newY = playerY + mouseDirection.dy;
+                    
+                    if (maze.canMove(playerX, playerY, newX, newY)) {
+                        playerX = newX;
+                        playerY = newY;
+                        if (playerX !== 0 || playerY !== 0) {
+                            hasLeftOrigin = true;
+                        }
+                        playerIconIndex = (playerIconIndex + 1) % playerIcons.length;
+                        lastMoveTime = now;
+                        
+                        // Decrement ghost mode counter
+                        if (ghostMovesRemaining > 0) {
+                            ghostMovesRemaining--;
+                        }
+                        
+                        // Check for powerup collection
+                        checkPowerupCollection();
+                        
+                        updateDisplay();
+                    }
+                }
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Send player position to server every 10 seconds
+        function sendPositionToServer() {
+            // gameId, PlayerId, x, y
+            const url = `${serverUrl}me.php?gid=${currentGameId}&pid=${currentPlayerId}&x=${playerX}&y=${playerY}`;
+            // Use fetch with no-cors mode to handle potential CORS issues
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.players) {
+                        otherPlayers = data.players;
+                        otherPlayersDisplay.textContent = `Other Players: ${Object.keys(otherPlayers).length}`;
+                    }
+                })
+                .catch(error => {
+                    // Silently ignore errors - don't disrupt gameplay
+                    console.debug(error);
+                });
+        }
+
+        // Initialize game
+        function startGame() {
+            // Initialize the maze with the game seed from server
+            maze = new InfiniteMaze(currentGameSeed);
+            
+            document.addEventListener('keydown', handleKeyPress);
+            
+            // Add touch controls
+            canvas.addEventListener('touchstart', handleTouch, { passive: false });
+            
+            // Add mouse controls (direction tracking only)
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseleave', handleMouseLeave);
+            
+            // Prevent context menu
+            canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+            
+            updateDisplay();
+            gameLoop(); // Start the game loop
+            
+            // Send position to server every 10 seconds
+            sendPositionToServer();
+            setInterval(sendPositionToServer, serverRefreshInterval);
+        }
+
+        // Fetch initialization data from server
+        initializeGame();
+    </script>
+</body>
+</html>
