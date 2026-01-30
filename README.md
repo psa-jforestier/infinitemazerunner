@@ -14,7 +14,7 @@ You can see other players competiting with you, they are represented by 😈 . Y
 
 ## Frontend
 
-The [index.html](index.html) is the main game. Run it inside your browser.
+The [index.html](index.html) is the main game. Run it inside your browser. Move the player with the keyboard or the mouse (desktop mode) or by touching the screen (mobile mode).
 
 ## Backend
 
