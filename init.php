@@ -1,4 +1,13 @@
 <?php
+
+/**
+ * This script is called when a new game start.
+ * It returns a unique player ID (and a cool player name) 
+ * and a unique game ID (and a cool game name).
+ */
+
+include_once('config.php');
+
 // Enable CORS headers
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');

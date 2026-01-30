@@ -1,5 +1,11 @@
 <?php
-define('DATA_FOLDER', dirname(__FILE__).'/data');
+/**
+ * This script is called periodicaly by the web front end.
+ * It record the player position and return all position of the player
+ * of the current game.
+ * Positions are stored in a game data file in the data/ folder.
+ */
+include_once('config.php');
 $gameid = @$_REQUEST['gid'];
 $playerid = @$_REQUEST['pid'];
 $x = @$_REQUEST['x'];
