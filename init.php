@@ -49,15 +49,23 @@ function generateGameId($seed) {
     $w1 = $gameWord1[array_rand($gameWord1)];
     $w2 = $gameWord2[array_rand($gameWord2)];
      */
+    /**
     $p = $prefix[$seed % count($prefix)];
     $w1 = $gameWord1[($seed >> 3) % count($gameWord1)];
     $w2 = $gameWord2[($seed >> 6) % count($gameWord2)];
+     */
+    srand($seed);
+    $p = $prefix[array_rand($prefix)];
+    $w1 = $gameWord1[array_rand($gameWord1)];
+    $w2 = $gameWord2[array_rand($gameWord2)];
     return "$p $w1 $w2";
 }
+
 
 function generateSeed() {
     $now = new DateTime();
     return (int)$now->format('YmdHi'); // Generate seed on every minute
+    //return (int)$now->format('YmdH'); // Generate seed on every hours
 }
 
 // playerid is truely randomized
@@ -65,6 +73,7 @@ $playerid = generatePlayerId();
 // but the game id is pseudo-random, based on date/time
 $seed = generateSeed();
 $gameid = generateGameId($seed);
+
 // Return JSON response with playerID and gameID
 $response = array(
     'seed' => $seed,
