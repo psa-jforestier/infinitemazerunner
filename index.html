@@ -54,6 +54,51 @@
             font-size: 14px;
             color: #888;
         }
+
+        #scoreboard {
+            margin-top: 20px;
+            font-size: 11px;
+            color: #0af;
+            font-family: 'Courier New', monospace;
+            max-width: 400px;
+            border: 1px solid #0af;
+            padding: 10px;
+            background-color: #0a0a0a;
+        }
+
+        #scoreboard h3 {
+            margin: 0 0 10px 0;
+            font-size: 12px;
+            text-align: center;
+            color: #0af;
+        }
+
+        .scoreboard-entry {
+            display: flex;
+            justify-content: space-between;
+            padding: 2px 5px;
+            border-bottom: 1px solid #0a4a4a;
+        }
+
+        .scoreboard-entry:last-child {
+            border-bottom: none;
+        }
+
+        .scoreboard-rank {
+            font-weight: bold;
+            width: 25px;
+        }
+
+        .scoreboard-name {
+            flex-grow: 1;
+            text-align: left;
+            padding: 0 10px;
+        }
+
+        .scoreboard-distance {
+            text-align: right;
+            width: 60px;
+        }
     </style>
 </head>
 <body>
@@ -61,12 +106,17 @@
         <span id="gameId" style="font-size: 10px; color: #666; margin-bottom: 10px;"></span> |
         <span id="otherPlayers" style="font-size: 10px; color: #666; margin-bottom: 10px;"></span> |
         <span id="playerId" style="font-size: 10px; color: #666; margin-bottom: 10px;"></span>
-        <div id="position">Position: (0, 0)</div>
+        <div id="position">Position: (0, 0) | Distance: 0</div>
+        <span id="countdownId">20.0s</span>
         <div id="instructions">Use Arrow Keys, WASD, Mouse, or Touch to move</div>
     </div>
     <canvas id="gameCanvas" width="320" height="320"></canvas>
     <div class="controls">
         Press R to reset | Move mouse/touch near player to navigate
+    </div>
+    <div id="scoreboard">
+        <h3>🏆 Top 10 Players 🏆</h3>
+        <div id="scoreboardList"></div>
     </div>
 
     <script>
@@ -76,15 +126,21 @@
         } else {
             var serverUrl = './'; //window.location.protocol + '//' + window.location.hostname + '/maze/';
         }
-        const serverRefreshInterval = 10000; // 10 seconds
+        const DEBUG=false;
+        const serverRefreshInterval = (DEBUG==false ? 10000 : 1000000000); // 10 seconds if DEBUG, else 30 seconds
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const positionDisplay = document.getElementById('position');
         const playerIdDisplay = document.getElementById('playerId');
         const gameIdDisplay = document.getElementById('gameId');
         const otherPlayersDisplay = document.getElementById('otherPlayers');
+        if (DEBUG == true) {
+            canvas.style.width = '640px';
+            canvas.style.height = '640px';
+        }
         
-        // Variables to store player and game IDs from server
+        // Scoreboard tracking
+        let highscores = {}; // Store highscores from server
         let currentPlayerId = '';
         let currentGameId = '';
         let currentGameSeed = 0;
@@ -95,6 +151,11 @@
                 .then(response => response.json())
                 .then(data => {
                     currentPlayerId = data.playerid;
+                    if (localStorage.getItem("MazePlayerId") == null) {
+                        localStorage.setItem("MazePlayerId", currentPlayerId);
+                    } else {
+                        currentPlayerId = localStorage.getItem("MazePlayerId");
+                    }
                     currentGameId = data.gameid;
                     currentGameSeed = data.seed;
                     playerIdDisplay.textContent = `Player ID: ${currentPlayerId}`;
@@ -106,10 +167,15 @@
                     console.error('Failed to initialize game:', error);
                     // Fallback: generate IDs locally if init.php fails
                     currentPlayerId = generatePlayerId();
+                    if (localStorage.getItem("MazePlayerId") == null) {
+                        localStorage.setItem("MazePlayerId", currentPlayerId);
+                    } else {
+                        currentPlayerId = localStorage.getItem("MazePlayerId");
+                    }
                     const now = new Date();
                     //currentGameId = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
                     currentGameSeed = 10000; // Default seed
-                    currentGameId = `local-${currentGameId}`;
+                    currentGameId = `local-${currentGameSeed}`;
                     playerIdDisplay.textContent = `Player ID: ${currentPlayerId}`;
                     gameIdDisplay.textContent = `Game ID: ${currentGameId}`;
                     startGame();
@@ -127,7 +193,7 @@
         }
 
         // Game settings
-        let GRID_SIZE = 7; // visible cells (can change with powerups)
+        let GRID_SIZE = (DEBUG == true ? 31 : 7); // visible cells (can change with powerups)
         let CELL_SIZE = canvas.width / GRID_SIZE; // Size of each cell in pixels
 
         // Player position (in maze coordinates)
@@ -145,121 +211,155 @@
         let otherPlayers = {}; // Track other players' positions
 
         // Powerup types
+        // each powerup has its own probability to appears in a cell
         const POWERUP_TYPES = {
-            ZOOM:  { icon: '🔍', probability: 0.005 },
-            GHOST: { icon: '👻', probability: 0.001 }
+            GHOST: { icon: '👻', probability: 1/500 },
+            ZOOM:  { icon: '🔍', probability: 1/500 },
+            NONE:  { icon: '❌', probability: 1 } // Representing 'none' with the remaining probability
         };
+        // Calculate total probability from all power-up types dynamically (must be < 1)
+        POWERUP_TYPES.TOTAL_PROBABILITY = 
+            Object.values(POWERUP_TYPES).reduce((acc, type) => acc + type.probability, 0);
 
-        // Complex maze generation using Perlin-like noise and cellular automata
+        let gameStartedAt = null;
+        // Simple maze generation based on cell coordinates
+        // Wall types: each cell has a pattern defined by (X * Y) % 16
         class InfiniteMaze {
+
             constructor(gameSeed = 0) {
-                // Store the game seed for deterministic maze generation
-                this.gameSeed = gameSeed / 100000000;
+                this.gameSeed = gameSeed;
+                // Wall patterns: 10 different wall configurations
+                // 0: top, 1: left, 2: bottom, 3: right, 4: top+right, 5: top+bottom, 
+                // 6: top+left, 7: left+right, 8: bottom+right, 9: no walls
+                this.wallPatterns = [
+                    { top: true,  left: false, bottom: false, right: false },  // 0
+                    { top: false, left: true,  bottom: false, right: false },  // 1
+                    { top: false, left: false, bottom: true,  right: false },  // 2
+                    { top: false, left: false, bottom: false, right: true },   // 3
+                    { top: false, left: false, bottom: false, right: false },   // 4 : empty cell
+                ];
+                
+                /*
+                this.wallPatterns = [
+                    { top: true,  left: false, bottom: false, right: false },  // 0
+                    { top: false, left: true,  bottom: false, right: false },  // 1
+                    { top: false, left: false, bottom: true,  right: false },  // 2
+                    { top: false, left: false, bottom: false, right: true },   // 3
+                    { top: true,  left: false, bottom: false, right: true },   // 4
+                    { top: true,  left: false, bottom: true,  right: false },  // 5
+                    { top: true,  left: true,  bottom: false, right: false },  // 6
+                    { top: false, left: true,  bottom: false, right: true },   // 7
+                    { top: false, left: false, bottom: true,  right: true },   // 8
+                    { top: false, left: false, bottom: false, right: false },   // 10
+                    { top: false, left: true,  bottom: true,  right: false }
+                ];
+                console.debug( this.wallPatterns);
+                for (let t = 0; t <=2 ; t++) {
+                    for (let b = 0; b <=2 ; b++) {
+                        for (let l = 0; l <=2 ; l++) {
+                            for (let r = 0; r <=2 ; r++) {
+                                const pattern = { top: (t==1), left: (l==1), bottom: (b==1), right: (r==1) };
+                                let exists = false;
+                                for (let p=0; p < this.wallPatterns.length; p++) {
+                                    const wp = this.wallPatterns[p];
+                                    if (wp.top == pattern.top && wp.left == pattern.left && wp.bottom == pattern.bottom && wp.right == pattern.right) {
+                                        exists = true;
+                                        break;
+                                    }
+                                }
+                                if (exists == false) {
+                                    this.wallPatterns.push(pattern);
+                                }
+                            }
+                        }
+                    }
+                }
+                **/
+                console.debug( this.wallPatterns);
+            }
+            getWallPatternToString(pattern) {
+                var cell=[["·", "·", "·"],["·", "·", "·"],["·", "·", "·"]];
+                if (pattern.top) {
+                    cell[0][0] = '#';
+                    cell[0][1] = '#';
+                    cell[0][2] = '#';
+                }
+                if( pattern.left) {
+                    cell[0][0] = '#';
+                    cell[1][0] = '#';
+                    cell[2][0] = '#';
+                }
+                if( pattern.bottom) {
+                    cell[2][0] = '#';
+                    cell[2][1] = '#';
+                    cell[2][2] = '#';
+                }
+                if( pattern.right) {
+                    cell[0][2] = '#';
+                    cell[1][2] = '#';
+                    cell[2][2] = '#';
+                }
+                let str = '';
+                for (let r=0; r < 3; r++) {
+                    str +=  cell[r][0] + cell[r][1] + cell[r][2] + "\n";
+                }
+                return str;
             }
 
-            // High-quality hash function for procedural generation
-            hash(x, y, seed = 0) {
-                let h = (this.gameSeed + seed) * 374761393 + x * 668265263 + y * 2147483647;
-                h = (h ^ (h >>> 16)) * 0x85ebca6b;
-                h = (h ^ (h >>> 13)) * 0xc2b2ae35;
-                h = h ^ (h >>> 16);
-                return h >>> 0;
+            // Simple pseudo-random generator based on cell coordinates
+            // Return a float value between 0 and 1
+            getPseudoRandom(x, y) {
+                // Combine the integers to create a seed
+                const seed = (
+                    (Math.abs(x * 73856093 ^ y * 19349663) + this.gameSeed)
+                    % 1000003); // XOR and modulus to create a complex seed
+
+                // Linear Congruential Generator (LCG) constants
+                const a = 1664525;  // Multiplier
+                const c = 1013904223; // Increment
+                const m = 4294967296; // 2^32
+
+                // Use LCG to generate a new pseudo-random number
+                let lcgValue = (a * seed + c) % m;
+
+                // Normalize to [0, 1]
+                const pseudoRandomValue = lcgValue / (m - 1);
+                return pseudoRandomValue;
+            }
+            // Get wall pattern for a cell based on X,Y 
+            getWallPattern(x, y) {
+                var index = Math.abs((x * y) % 16) % 10;
+                index = Math.abs(x+y) % this.wallPatterns.length;
+                index = Math.floor(this.getPseudoRandom(x, y) * this.wallPatterns.length);
+                var r = this.getPseudoRandom(x, y);
+                index = Math.floor(r * this.wallPatterns.length);
+                return this.wallPatterns[index];
             }
 
-            // Get pseudo-random value between 0 and 1
-            random(x, y, seed = 0) {
-                return (this.hash(x, y, seed) % 10000) / 10000;
-            }
-
-            // Perlin-like noise for smoother patterns
-            noise(x, y, frequency = 1) {
-                const fx = x * frequency;
-                const fy = y * frequency;
-                
-                const x0 = Math.floor(fx);
-                const x1 = x0 + 1;
-                const y0 = Math.floor(fy);
-                const y1 = y0 + 1;
-                
-                const sx = fx - x0;
-                const sy = fy - y0;
-                const f = (frequency * 1000);
-
-                const n00 = this.random(x0, y0, f);
-                const n10 = this.random(x1, y0, f);
-                const n01 = this.random(x0, y1, f);
-                const n11 = this.random(x1, y1, f);
-                
-                const nx0 = n00 * (1 - sx) + n10 * sx;
-                const nx1 = n01 * (1 - sx) + n11 * sx;
-                
-                return nx0 * (1 - sy) + nx1 * sy;
-            }
-
-            // Check if there's a wall between two cells using complex algorithm
+            // Check if there's a wall between two cells
             hasWall(x1, y1, x2, y2) {
-                const dx = x2 - x1;
-                const dy = y2 - y1;
-
+                const dx = x2 - x1; // > 0 if checking right
+                const dy = y2 - y1; // > 0 if checking down
+                const currentPattern = this.getWallPattern(x1, y1);
+                const newPattern = this.getWallPattern(x2, y2);
+                //console.debug(`Checking wall between (${x1},${y1}) and (${x2},${y2}) dx=${dx} dy=${dy}`);
+                //console.debug('Player is moving ' + (dx === 1 ? 'right' : (dx === -1 ? 'left' : (dy === 1 ? 'down' : (dy === -1 ? 'up' : 'nowhere')))) );
+                //console.debug('  current cell pattern:\n' + this.getWallPatternToString(currentPattern));
+                //console.debug('  target  cell pattern:\n' + this.getWallPatternToString(newPattern));
                 if (dx === 0 && dy === 0) return true;
+                // We are not supposed to move more than one cell by one cell
                 if (Math.abs(dx) + Math.abs(dy) !== 1) return true;
+                // check current cell if there is a wall in the direction of movement
+                // Assuming payer is in the center of the cell.
+                // check if he can move to the direction he wants
+                // by checking walls in current and target cells
+                if (dy === -1) return currentPattern.top    || newPattern.bottom;      // Moving up
+                if (dy === 1)  return currentPattern.bottom || newPattern.top;   // Moving down
+                if (dx === -1) return currentPattern.left   || newPattern.right;     // Moving left  
+                if (dx === 1)  return currentPattern.right  || newPattern.left;    // Moving right
+             
 
-                // Determine which wall to check
-                let wallX, wallY, isVertical;
-                
-                if (dx === 1) { // Right wall
-                    wallX = x2;
-                    wallY = y2;
-                    isVertical = true;
-                } else if (dx === -1) { // Left wall
-                    wallX = x1;
-                    wallY = y1;
-                    isVertical = true;
-                } else if (dy === 1) { // Bottom wall
-                    wallX = x2;
-                    wallY = y2;
-                    isVertical = false;
-                } else { // Top wall
-                    wallX = x1;
-                    wallY = y1;
-                    isVertical = false;
-                }
-
-                // Combine multiple noise layers for complexity
-                const noise1 = this.noise(wallX, wallY, 0.1); // Large features
-                const noise2 = this.noise(wallX, wallY, 0.3); // Medium features
-                const noise3 = this.noise(wallX, wallY, 0.7); // Small features
-                const noise4 = this.random(wallX, wallY, isVertical ? 7 : 11);
-                
-                // Combine noises with different weights
-                const combined = noise1 * 0.3 + noise2 * 0.3 + noise3 * 0.2 + noise4 * 0.2;
-                
-                // Add directional bias for more interesting corridors
-                const directionSeed = isVertical ? 13 : 17;
-                const directionNoise = this.noise(wallX, wallY, 0.15);
-                const direction = this.random(wallX, wallY, directionSeed);
-                
-                // Create winding corridors
-                let threshold = 0.55; // Base wall probability
-                
-                // Modify threshold based on position patterns
-                if (directionNoise > 0.6) {
-                    threshold += 0.1; // More walls in some areas
-                } else if (directionNoise < 0.4) {
-                    threshold -= 0.1; // More open in other areas
-                }
-                
-                // Add complexity with cellular automata-like rules
-                const neighborInfluence = (
-                    this.random(wallX + 1, wallY, 23) +
-                    this.random(wallX - 1, wallY, 23) +
-                    this.random(wallX, wallY + 1, 23) +
-                    this.random(wallX, wallY - 1, 23)
-                ) / 4;
-                
-                const finalValue = combined * 0.7 + neighborInfluence * 0.3;
-                
-                return finalValue > threshold;
+                return true;
             }
 
             // Check if player can move
@@ -269,7 +369,7 @@
                 return !this.hasWall(fromX, fromY, toX, toY);
             }
             
-            // return number of wall enclosing the player
+            // Return number of walls enclosing the player
             getWallCount(x, y) {
                 let count = 0;
                 if (this.hasWall(x, y, x, y - 1)) count++; // Top
@@ -279,28 +379,41 @@
                 return count;
             }
 
-            // Check if a cell has a powerup (predictable)
+            // Check if a cell has a powerup
             hasPowerup(x, y) {
-                // Use hash to determine if this cell has a powerup
-                const powerupSeed = 99999;
-                const value = this.random(x, y, powerupSeed);
-                // Total probability is ZOOM + GHOST probability
+                // Simple hash based on coordinates
+                const hash = Math.abs(x * 73856093 ^ y * 19349663) % 10000;
                 const totalProbability = POWERUP_TYPES.ZOOM.probability + POWERUP_TYPES.GHOST.probability;
-                return value < totalProbability;
+                return (hash / 10000) < totalProbability;
             }
 
             // Get powerup type for a cell
             getPowerupType(x, y) {
+                const r = this.getPseudoRandom(x, y); // From 0..1
+                //if ( r > POWERUP_TYPES.TOTAL_PROBABILITY) return null; // No powerup
+                // For sure we have a powerup, choose the best one according to probabilities
+
+                // Determine the cumulative probability
+                let cumulativeProbability = 0;
+
+                for (const type of Object.keys(POWERUP_TYPES)) {
+                    cumulativeProbability += POWERUP_TYPES[type].probability;
+
+                    // Check if the random value falls within the cumulative probability
+                    if (r <= cumulativeProbability) {
+                        if (type === 'NONE') return null; // No powerup
+                        return type; // Return the selected power-up type
+                    }
+                }
+
+                return null; // Default case if none picked
+                
                 if (!this.hasPowerup(x, y)) return null;
-                // Determine which powerup type based on position hash
-                const typeValue = this.random(x, y, currentGameSeed);
+                // Determine powerup type based on hash
+                const hash = Math.abs(x * 73856093 ^ y * 19349663) % 10000;
                 const totalProbability = POWERUP_TYPES.ZOOM.probability + POWERUP_TYPES.GHOST.probability;
                 const zoomRatio = POWERUP_TYPES.ZOOM.probability / totalProbability;
-                if (typeValue < zoomRatio) {
-                    return 'ZOOM';
-                } else {
-                    return 'GHOST';
-                }
+                return (hash / 10000) < zoomRatio ? 'ZOOM' : 'GHOST';
             }
         }
 
@@ -418,7 +531,11 @@
             if (hasLeftOrigin) {
                 const originScreenX = (0 - startX) * CELL_SIZE;
                 const originScreenY = (0 - startY) * CELL_SIZE;
-                
+                if (this.gameStartedAt == null)
+                {// New game started
+                    this.gameStartedAt = new Date();
+                    setInterval(updateTimerBomb, 100); // Update display every 100ms
+                } 
                 // Check if origin is visible on screen
                 if (originScreenX >= 0 && originScreenX < canvas.width && 
                     originScreenY >= 0 && originScreenY < canvas.height) {
@@ -430,16 +547,45 @@
             }
         }
 
+        function updateTimerBomb() {
+            if (this.gameStartedAt == null) return;
+            const now = new Date();
+            const elapsedMs = now - this.gameStartedAt;
+            const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
+            const countdownSeconds = Math.max(0, 20.0 - elapsedSeconds).toFixed(1);
+            const countdownDisplay = document.getElementById('countdownId');
+            countdownDisplay.textContent = `${countdownSeconds}s`;
+            if (countdownSeconds <= 0) {
+                
+                DIE("Boom! The bomb exploded !");
+                
+            }
+        }
         function DIE(reason)
         {
+            // Call server with player death info
+            const url = `${serverUrl}die.php?gid=${currentGameId}&pid=${currentPlayerId}&x=${playerX}&y=${playerY}`;
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    // Update highscores if provided
+                    if (data && data.highscores) {
+                        highscores = data.highscores;
+                        updateScoreboard();
+                    }
+                })
+                .catch(error => console.debug('Die notification sent:', error));
+            
+            this.gameStartedAt = null;
             alert(reason);
             // Reset player position
             playerX = 0;
             playerY = 0;
             hasLeftOrigin = false;
             ghostMovesRemaining = 0;
-            isZoomedOut = false;
+            isZoomedOut = true; applyPowerup('ZOOM'); // Reset zoom (a little hack)
             collectedPowerups.clear();
+            initializeGame();
             updateDisplay();
         }
         // Handle keyboard input
@@ -517,7 +663,7 @@
         // Apply powerup effect
         function applyPowerup(type) {
             if (type === 'ZOOM') {
-                // Toggle between 7 and 31 cells
+                // Toggle between 7 and 15 cells
                 if (isZoomedOut) {
                     GRID_SIZE = 7;
                     isZoomedOut = false;
@@ -536,7 +682,7 @@
         function updateDisplay() {
             drawMaze();
             const distance = Math.sqrt(playerX * playerX + playerY * playerY).toFixed(1);
-            let displayText = `Position: (${playerX}, ${playerY}) - Distance: ${distance}`;
+            let displayText = `Position: (${playerX}, ${playerY}) | Distance: ${distance}`;
             if (ghostMovesRemaining > 0) {
                 displayText += ` - Ghost: ${ghostMovesRemaining}`;
             }
@@ -697,11 +843,49 @@
                         otherPlayers = data.players;
                         otherPlayersDisplay.textContent = `Other Players: ${Object.keys(otherPlayers).length}`;
                     }
+                    // Update highscores if provided
+                    if (data && data.highscores) {
+                        highscores = data.highscores;
+                        updateScoreboard();
+                    }
                 })
                 .catch(error => {
                     // Silently ignore errors - don't disrupt gameplay
                     console.debug(error);
                 });
+        }
+
+        // Update scoreboard display
+        function updateScoreboard() {
+            const scoreboardList = document.getElementById('scoreboardList');
+            
+            // Convert highscores object to array and sort by distance
+            const scores = [];
+            for (const [playerName, playerData] of Object.entries(highscores)) {
+                scores.push({
+                    name: playerName,
+                    distance: playerData.score || 0
+                });
+            }
+            
+            // Sort by distance in descending order
+            scores.sort((a, b) => b.distance - a.distance);
+            
+            // Take top 10
+            const top10 = scores.slice(0, 10);
+            
+            // Build HTML
+            let html = '';
+            top10.forEach((entry, index) => {
+                const distance = Math.round(entry.distance * 10) / 10; // Round to 1 decimal
+                html += `<div class="scoreboard-entry">
+                    <span class="scoreboard-rank">#${index + 1}</span>
+                    <span class="scoreboard-name">${entry.name}</span>
+                    <span class="scoreboard-distance">${distance}</span>
+                </div>`;
+            });
+            
+            scoreboardList.innerHTML = html;
         }
 
         // Initialize game
@@ -727,6 +911,7 @@
             // Send position to server every 10 seconds
             sendPositionToServer();
             setInterval(sendPositionToServer, serverRefreshInterval);
+            
         }
 
         // Fetch initialization data from server
