@@ -64,8 +64,8 @@ function generateGameId($seed) {
 
 function generateSeed() {
     $now = new DateTime();
-    return (int)$now->format('YmdHi'); // Generate seed on every minute
-    //return (int)$now->format('YmdH'); // Generate seed on every hours
+    //return (int)$now->format('YmdHi'); // Generate seed on every minute
+    return (int)$now->format('YmdH'); // Generate seed on every hours
 }
 
 // playerid is truely randomized
