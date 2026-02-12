@@ -119,7 +119,6 @@ class UIManager {
     handleRetry() {
         this.hideDeathPopup();
         gameState.resetPlayer();
-        gameState.isDead = false;
         this.updatePositionDisplay();
         renderer.draw();
     }

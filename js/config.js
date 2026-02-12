@@ -29,7 +29,7 @@ const SCOREBOARD_LIMIT = 10; // Top 10 players
 const PLAYER_ICONS = ['😀', '😃', '😄', '😊', '😑', '😐', '😏', '😑', '😒', '😐', '😕'];
 const PLAYER_EMOJI = '😀';
 const ENEMY_EMOJI = '😈';
-const BOMB_EMOJI = '💣';
+const BOMB_EMOJI = ['💣', '🧨'];
 
 // Powerup types and probabilities
 const POWERUP_TYPES = {

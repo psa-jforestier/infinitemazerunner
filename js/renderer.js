@@ -194,7 +194,9 @@ class GameRenderer {
             this.ctx.font = `${gameState.cellSize * 0.8}px Arial`;
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'middle';
-            this.ctx.fillText(BOMB_EMOJI, originScreenX + gameState.cellSize / 2, originScreenY + gameState.cellSize / 2);
+            const r = Math.round(gameState.getRemainingTime());
+            this.ctx.fillText(BOMB_EMOJI[r % BOMB_EMOJI.length ], originScreenX + gameState.cellSize / 2, originScreenY + gameState.cellSize / 2);
+            //this.ctx.fillText(r, originScreenX + gameState.cellSize / 2, originScreenY + gameState.cellSize / 2);
         }
     }
 }

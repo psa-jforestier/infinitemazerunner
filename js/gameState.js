@@ -9,17 +9,11 @@ class GameState {
         this.currentGameId = '';
         this.currentGameSeed = 0;
 
-        // Player position
-        this.playerX = 0;
-        this.playerY = 0;
-        this.playerIconIndex = 0;
-        this.hasLeftOrigin = false;
-        this.isDead = false;
+        
 
         // Powerup system
         this.collectedPowerups = new Set();
-        this.ghostMovesRemaining = 0;
-        this.isZoomedOut = false;
+ 
 
         // Multiplayer
         this.otherPlayers = {};
@@ -36,6 +30,8 @@ class GameState {
 
         // High scores tracking
         this.highscores = {};
+
+        this.resetPlayer();
     }
 
     /**
@@ -60,6 +56,7 @@ class GameState {
      * Reset player to origin
      */
     resetPlayer() {
+        // reset Player position, 
         this.playerX = 0;
         this.playerY = 0;
         this.playerIconIndex = 0;
@@ -68,6 +65,8 @@ class GameState {
         this.collectedPowerups.clear();
         this.gameStartedAt = null;
         this.isDead = false;
+        this.isZoomedOut = false;
+        this.gridSize = ZOOM_IN_SIZE;
     }
 
     /**
