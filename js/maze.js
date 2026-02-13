@@ -74,6 +74,13 @@ class InfiniteMaze {
      * Get the cell configuration at a global coordinate
      */
     getCell(globalX, globalY) {
+        console.log(`Getting cell for global coordinates (${globalX}, ${globalY})`);
+        if (
+            (globalX === -1 || globalX === 0 || globalX === 1) &&
+            (globalY === -1 || globalY === 0 || globalY === 1)
+        ) {
+            return { top: false, right: false, bottom: false, left: false };
+        }
         const { chunkX, chunkY, cellX, cellY } = this.getChunkAndCellCoordinates(globalX, globalY);
         const chunk = this.getChunk(chunkX, chunkY);
         return chunk.cells[cellY][cellX];
